@@ -34,6 +34,7 @@ function onOpen() {
       .addItem('Activar/Desactivar Sincronización', 'uiToggleNotion'))
     .addSeparator()
     .addItem('🧹 Ordenar Base de Datos', 'uiRunMaintenance')
+    .addItem('🔄 Re-procesar huérfanos (IA)', 'uiRunSweeper') // <-- re procesamiento de huerfanos
     .addSeparator()
     .addItem('🗑️ Eliminar Transacción SLEECCIONADA (⚠️ Antes selecciona ID de transacción a borrar)', 'uiDeleteSelectedTransaction')
     .addItem('🚑 Rescatar a Notion (Filas Seleccionadas)', 'uiRescueNotionSync')
@@ -285,4 +286,13 @@ function uiRescueNotionSync() {
     pushToNotion(transactionsToSync);
     ui.alert('✅ Rescate Finalizado', 'Las transacciones fueron enviadas a Notion. Por favor, revisa Notion para confirmar.', ui.ButtonSet.OK);
   }
+}
+
+/**
+ * UI Handler: Ejecuta manualmente el motor de reprocesamiento.
+ */
+function uiRunSweeper() {
+  const ui = SpreadsheetApp.getUi();
+  const mensaje = retryUnclassifiedTransactions();
+  ui.alert('Reporte de IA', mensaje, ui.ButtonSet.OK);
 }
