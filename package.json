@@ -1,0 +1,33 @@
+{
+  "name": "asistente-bancario",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ingesta automática de gastos desde correos bancarios chilenos y Telegram hacia Google Sheets y Notion, con clasificación por Gemini.",
+  "license": "SEE LICENSE IN src/LICENSE.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "format": "prettier --write \"src/**/*.{js,json}\" \"tests/**/*.js\" \"scripts/**/*.js\" \"docs/**/*.md\" \"*.{js,json,md}\"",
+    "format:check": "prettier --check \"src/**/*.{js,json}\" \"tests/**/*.js\" \"scripts/**/*.js\" \"docs/**/*.md\" \"*.{js,json,md}\"",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --test-timeout=60000 --test-reporter=spec \"tests/**/*.test.js\"",
+    "test:coverage": "node --test --test-timeout=60000 --experimental-test-coverage \"tests/**/*.test.js\"",
+    "syntax": "node scripts/check-syntax.js",
+    "check": "npm run syntax && npm run format:check && npm run lint && npm run typecheck && npm test",
+    "push": "clasp push",
+    "deploy": "clasp deploy"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@google/clasp": "^3.4.1",
+    "@types/google-apps-script": "^2.0.13",
+    "@types/node": "^26.6.3",
+    "eslint": "^10.11.0",
+    "eslint-plugin-jsdoc": "^65.0.0",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.9",
+    "typescript": "^6.0.3"
+  }
+}

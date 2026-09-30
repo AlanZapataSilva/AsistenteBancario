@@ -1,0 +1,7 @@
+{
+  "scriptId": "REEMPLAZAR_CON_EL_SCRIPT_ID_DEL_PROYECTO",
+  "rootDir": "src",
+  "scriptExtensions": [".js", ".gs"],
+  "htmlExtensions": [".html"],
+  "jsonExtensions": [".json"]
+}

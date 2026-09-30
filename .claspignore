@@ -1,0 +1,6 @@
+**/**
+!appsscript.json
+!**/*.js
+!**/*.html
+**/*.test.js
+**/__mocks__/**
