@@ -1,46 +1,68 @@
 # AGENTS.md
 
 ## Project Overview
-- **Platform**: Google Apps Script (GAS) project on the **V8 runtime** (`appsscript.json`, timezone: `America/Santiago`).
+
+- **Platform**: Google Apps Script (GAS) project on the **V8 runtime** (`src/appsscript.json`, timezone: `America/Santiago`), developed locally and deployed with **clasp** (`rootDir: src`).
 - **Core function**: Automated financial expense ingestion from Chilean bank emails (BCI, Tenpo, MACH, Banco de Chile) and Telegram Bot into Google Sheets (`Transacciones`, `Diccionario`, `Logs`) and Notion, enriched with Google Gemini AI categorization.
-- **License**: Source-Available / Non-commercial (`LICENCE.gs`).
+- **License**: Source-Available / Non-commercial (`src/LICENSE.js`).
+- **Docs**: `README.md` (setup, deploy, runbook), `docs/AUDITORIA.md` (findings), `docs/ROADMAP.md` (opportunities).
 
 ## Code Structure & Global Scope
-In GAS, all `.gs` files execute in a single **shared global namespace** (no ES modules, `import`, or `export`):
-- `appsscript.json`: Manifest configuration (V8 runtime, timezone, web app permissions).
-- `config.gs`: Environment access via `PropertiesService` (`getEnv`, `setEnv`), sheet constants (`CONFIG`), bank regex patterns (`BCI_LOGIC`, `TENPO_LOGIC`, etc.), and `MERCHANT_ALIASES` for entity resolution.
-- `extractor.gs`: Gmail ETL engine (`processEmails`). Ingests bank threads, deduplicates via message IDs, and chains execution triggers if runtime exceeds 3.5 minutes.
-- `parser.gs`: Bank router (`parseBankEmail`) and bank parsers (`parseBciEmail`, `parseTenpoEmail`, `parseMachEmail`, `parseBancoChileEmail`). Handles foreign currency (USD to CLP) via `mindicador.cl`.
-- `gemini.gs`: AI categorization (`categorizeWithGemini`). Queries local dictionary cache first, then executes a resilient fallback cascade (`_fetchGeminiAPIWithCascade`) across dynamic Pro/Flash models and fallback endpoints.
-- `dao.gs`: Data access layer for Google Sheets (`saveToDatabase`, `getExistingTransactionIds`, `deleteTransactionsByIds`). Uses `LockService.getScriptLock()` for concurrency control.
-- `notion.gs`: Notion API client (`pushToNotion`, `deleteTransactionInNotion`). Uses `Utilities.sleep(500)` for strict rate limiting (<= 2 req/s).
-- `telegram.gs`: Webhook handler (`doPost`), interactive inline keyboard menu, manual expense recording, batch deletion command (`/borrar <IDs>`), and transfer notifications (`notifyTransferRules`).
-- `logger.gs`: Centralized log appender (`logSystemEvent`) writing to the `Logs` sheet and firing Telegram alerts on `ERROR`.
-- `maitenance.gs` / `maintenance.gs`: Scheduled maintenance (`cleanAndSortData`) and unclassified transaction sweeper (`retryUnclassifiedTransactions`).
-- `triggers.gs`: Time-driven triggers setup (`uiSetupTriggers` -> hourly `processEmails`, daily 2 AM `cleanAndSortData`).
-- `setup.gs`: First-time setup orchestrator (`installApp`).
-- `ui.gs`: Custom menu in Google Sheets (`🤖 Asistente bancario`) and interactive prompt wizards.
+
+In GAS, all files in `src/` execute in a single **shared global namespace** (no ES modules, `import`, or `export`). Files only contain declarations: no top-level code may depend on another file, so load order never matters.
+
+- `appsscript.json`: Manifest (V8 runtime, timezone, web app permissions).
+- `types.js`: JSDoc `@typedef`s only (DTOs, Gemini and Telegram shapes). No runtime code.
+- `config.js`: Environment access (`getEnv`, `setEnv`), `CONFIG` (sheets, headers, Gmail labels, `PENDING_CATEGORY`), bank regex patterns (`BCI_LOGIC`, `TENPO_LOGIC`, …) and `MERCHANT_ALIASES` (order matters: first match wins).
+- `schema.js`: Maps DTO fields to sheet headers (`TRANSACTION_FIELDS`), resolves column positions from the header row (`getTransactionColumns`), `transactionToRow`, `normalizeMerchantKey`.
+- `utils.js`: Pure helpers (`formatClp`, `getErrorMessage`, `getErrorStack`).
+- `extractor.js`: Gmail ETL (`processEmails`, `continueProcessEmails`). Guarded by a **user lock**; order is parse → classify → save → label. Unreadable emails are labeled `SaaS_Finanzas/Error_Parseo`. Relays via trigger past 3.5 minutes.
+- `parser.js`: Bank router (`parseBankEmail`, sender **domain** match) and parsers (`parseBciEmail`, `parseTenpoEmail`, `parseMachEmail`, `parseBancoChileEmail`); USD→CLP via `mindicador.cl`.
+- `gemini_client.js`: REST client. Paginated `ListModels`, numeric version ordering, per-model health (circuit breaker in `CacheService`), retries, graceful degradation of optional params, API key in the `x-goog-api-key` header. Never throws on API failures (`callGemini` returns a result object).
+- `classifier.js`: `classifyTransactions` (dictionary → Gemini in batches with numeric `id`s, structured output). Mutates items in place, returns a summary, never throws.
+- `dao.js`: Sheets data layer (`saveToDatabase`, `deleteTransactionsByIds`, `getDictionaryMap`, `withScriptLock`, `getSheetOrThrow`). Idempotent inserts inside the script lock; Notion calls happen **outside** the lock.
+- `notion.js`: Notion client (`pushToNotion`, `deleteTransactionInNotion`, `updateTransactionInNotion`). Every request sleeps 500 ms and retries on 429 honoring `Retry-After`.
+- `telegram.js`: Webhook (`doPost`), menu, manual expenses, `/borrar`, notifications. Only the chat in `TELEGRAM_CHAT_ID` is served; the webhook secret is mandatory.
+- `logger.js`: `logSystemEvent` → `Logs` sheet; `ERROR` also alerts Telegram (detail included, HTML-escaped, throttled to 1 per message / 30 min, secrets redacted).
+- `maintenance.js`: Sweeper (`retryUnclassifiedTransactions`), nightly `cleanAndSortData`, pending digest. **Never nests locks.**
+- `diagnostics.js`: `runDiagnostics` (menu «🩺 Diagnóstico»): config check + real minimal Gemini call.
+- `triggers.js`, `setup.js`, `ui.js`: triggers (`uiSetupTriggers`), first-time setup (`installApp`), custom menu and wizards.
 
 ## Verification & Tooling
-Because GAS APIs (`SpreadsheetApp`, `GmailApp`, `PropertiesService`, etc.) are hosted on Google's cloud infrastructure, there is no local GAS runtime:
-- **Syntax Verification (Node.js)**: Validate syntax across all `.gs` files locally:
-  ```powershell
-  node -e "const fs = require('fs'), vm = require('vm'); fs.readdirSync('.').filter(f => f.endsWith('.gs')).forEach(f => { try { new vm.Script(fs.readFileSync(f, 'utf8'), { filename: f }); console.log(f + ': OK'); } catch (e) { console.error(f + ': ERROR ' + e.message); process.exitCode = 1; } })"
-  ```
-- **Live Execution & Testing**: Test functions like `testGeminiIntegration()` directly in the Google Apps Script IDE / Script Editor console.
+
+There is no local GAS runtime; `tests/harness/` loads `src/` into one `vm` context and fakes the Google services.
+
+```bash
+npm install
+npm run check          # syntax (vm) + prettier + eslint + tsc (checkJs, strict) + tests
+npm test               # tests only
+node scripts/todo-report.js   # known defects still failing (`todo` tests)
+```
+
+- **Types/docs**: every function needs JSDoc with types (`@param {T} name - …`, `@returns`). `tsc --noEmit` runs in `strict` mode over `src/`. Write comments and messages in Spanish.
+- **Tests**: `tests/characterization/` (behavior preserved from the original), `tests/known-bugs/` (acceptance criteria; a test marked `todo` still fails), plus focused suites. No test or debug function may live in `src/`.
+- **Live check** after a deploy: menu «🩺 Diagnóstico del sistema».
+
+## Deploy (clasp)
+
+`npm run check` → `npx clasp push` → `npx clasp version "…"` → `npx clasp deploy -i <existingDeploymentId>`. **Never create a new Web App deployment** (the Telegram webhook URL would change). `clasp push` overwrites the remote project; back it up first (`clasp pull` + `clasp version`). See `README.md`.
 
 ## Environment Variables (Script Properties)
-Configured in `PropertiesService.getScriptProperties()` via `uiConfigWizard` / `uiConfigNotion` or `setEnv(key, value)`:
-- `GEMINI_API_KEY`: API key for Google Gemini.
-- `GEMINI_ANALYZE_TRANSFERS`: `'true'` / `'false'` (user privacy toggle for parsing transfer comment strings).
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_SECRET_TOKEN`: Telegram bot credentials & webhook token validation.
-- `WEB_APP_URL`: Google Apps Script deployed Web App URL for Telegram webhook.
-- `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`, `NOTION_ENABLED`: Notion integration toggle and credentials.
-- `INITIAL_BACKFILL_COMPLETED`: `'true'` / `'false'` (switches Gmail search window from 365 days to 5 days).
+
+Configured with `uiConfigWizard` / `uiConfigNotion` or `setEnv(key, value)`:
+
+- `GEMINI_API_KEY`, `GEMINI_ANALYZE_TRANSFERS` (`'true'`/`'false'`, privacy toggle), `GEMINI_ALLOW_PRO` (`'true'` allows Pro models as last resort), `GEMINI_MODELS` (CSV fallback list).
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (the only authorized chat), `TELEGRAM_SECRET_TOKEN` (required), `WEB_APP_URL`.
+- `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`, `NOTION_ENABLED`.
+- `INITIAL_BACKFILL_COMPLETED`: `'true'` / `'false'` (365 days vs 5 days Gmail window).
 
 ## Key Operational Gotchas & Conventions
-1. **Global Namespace Collisions**: Never declare conflicting top-level function or variable names across different files. Note: `maintenance.gs` and `maitenance.gs` contain duplicated/competing functions; prefer updating `maitenance.gs` (contains the active `retryUnclassifiedTransactions` implementation) or keeping them aligned.
-2. **Execution Time Limit**: GAS has a strict 6-minute execution cap. `extractor.gs` bounds batch loops to 3.5 minutes (`MAX_EXECUTION_TIME`) and schedules `continueProcessEmails` via `ScriptApp.newTrigger` when backfilling.
-3. **Concurrency & Locking**: Always wrap write operations to Sheets with `LockService.getScriptLock()` with a timeout (10-30s) and release inside a `finally` block (see `dao.gs`).
-4. **Zero Hardcoding of Indexes**: In maintenance/sweeper operations, resolve column indexes dynamically from the header row (`headers.indexOf(...)`) instead of hardcoding column offsets.
-5. **Notion Rate Limiting**: All Notion API operations must maintain throttling delays (500ms sleep) to avoid 429 rate limit errors during batch synchronization.
+
+1. **Global namespace**: never declare the same top-level name in two files (`tests/known-bugs/parser-config-structure.test.js` checks it). Private helpers start with `_`.
+2. **Execution time limit**: GAS caps executions at 6 minutes. `extractor.js` stops at 3.5 minutes and schedules `continueProcessEmails`; the AI calls take a `deadlineMs`.
+3. **Locks**: wrap Sheets writes with `withScriptLock(timeout, fn)` (short critical sections). **Never call a function that takes the script lock while holding it**, and never call Gemini or Notion inside a lock. It is not documented whether `LockService` is re-entrant; the code must work either way (`processEmails` uses the _user_ lock as its own guard).
+4. **No hardcoded column indexes**: resolve them from the header row (`getTransactionColumns`), locate rows by `ID_Unico`, not by remembered row numbers.
+5. **Notion rate limiting**: all Notion requests go through `_notionRequest` (500 ms sleep, retry on 429).
+6. **No schema changes** without updating Looker Studio and Notion: the sheet headers are pinned by a test.
+7. **Never log secrets**: use `logSystemEvent` (it redacts known credentials); the Gemini key travels only in a header.
+8. **Failing AI must never lose data**: unclassified transactions are saved as `CONFIG.PENDING_CATEGORY` and retried by the sweeper.

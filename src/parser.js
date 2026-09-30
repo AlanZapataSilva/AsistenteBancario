@@ -1,11 +1,10 @@
 /**
- * Archivo: parser.gs
+ * Archivo: parser.js
  * Autor: Alan Zapata Silva
  * Copyright 2026 Alan Zapata Silva. Todos los derechos reservados.
  * Este codigo es Source-Available. NO es Open Source.
  * Queda estrictamente prohibida su modificacion, creacion de obras derivadas y uso comercial.
- * Revise el archivo LICENSE.gs para conocer los terminos vinculantes.
- * * VERSIÓN ACTUAL: Estable + Híbrido (Sanitización BCI + Tolencia a Fallos)
+ * Revise el archivo LICENSE.js para conocer los terminos vinculantes.
  */
 
 /**
@@ -15,27 +14,54 @@
  */
 
 /**
+ * Extrae el dominio de la dirección del remitente de un encabezado From
+ * (`"Nombre" <usuario@dominio.cl>` o `usuario@dominio.cl`), en minúsculas.
+ * @private
+ * @param {string} fromHeader
+ * @returns {string} Dominio, o '' si no se pudo determinar.
+ */
+function _senderDomain(fromHeader) {
+  const angle = fromHeader.match(/<([^>]+)>/);
+  const address = (angle ? angle[1] : fromHeader).trim().toLowerCase();
+  const at = address.lastIndexOf('@');
+  return at === -1 ? '' : address.slice(at + 1).replace(/[>\s]+$/g, '');
+}
+
+/**
+ * Indica si un dominio es `root` o uno de sus subdominios (`mail.machbank.cl` ∈ `machbank.cl`).
+ * Evita que dominios parecidos (`tenpo-promos.xyz`) pasen por un banco.
+ * @private
+ * @param {string} domain
+ * @param {string} root
+ * @returns {boolean}
+ */
+function _isDomainOf(domain, root) {
+  return domain === root || domain.endsWith('.' + root);
+}
+
+/**
  * Router / Dispatcher Central con Resolución de Entidades.
- * Identifica el banco emisor basándose en el dominio del remitente y 
+ * Identifica el banco emisor por el DOMINIO del remitente (no por coincidencia de texto) y
  * delega la extracción al parser específico de ese banco.
- * * @param {GoogleAppsScript.Gmail.GmailMessage} message - El mensaje de Gmail.
- * @returns {Object|null} El DTO estandarizado o null si el banco no está soportado.
+ * @param {GoogleAppsScript.Gmail.GmailMessage} message - El mensaje de Gmail.
+ * @returns {Transaction|null} El DTO estandarizado o null si el banco no está soportado.
  */
 function parseBankEmail(message) {
-  const sender = message.getFrom().toLowerCase(); 
-  const subject = message.getSubject();
-  let dto = null; // Guardaremos el resultado aquí temporalmente
+  const sender = message.getFrom().toLowerCase();
+  const domain = _senderDomain(sender);
+  /** @type {Transaction|null} */
+  let dto;
 
   try {
     // 1. Enrutadores
-    if (sender.includes('@bci.cl')) {
+    if (_isDomainOf(domain, 'bci.cl')) {
       dto = parseBciEmail(message);
-    } else if (sender.includes('@tenpo.cl') || sender.includes('tenpo')) {
-      dto = parseTenpoEmail(message); 
-    } else if (sender.includes('@mail.machbank.cl') || sender.includes('machbank')) {
-      dto = parseMachEmail(message); 
-    } else if (sender.includes('@bancochile.cl') || sender.includes('bancochile')) {
-      dto = parseBancoChileEmail(message); 
+    } else if (_isDomainOf(domain, 'tenpo.cl')) {
+      dto = parseTenpoEmail(message);
+    } else if (_isDomainOf(domain, 'machbank.cl')) {
+      dto = parseMachEmail(message);
+    } else if (_isDomainOf(domain, 'bancochile.cl')) {
+      dto = parseBancoChileEmail(message);
     } else {
       logSystemEvent('WARN', 'Router', `Banco no soportado: ${sender}`);
       return null;
@@ -50,11 +76,13 @@ function parseBankEmail(message) {
           // Si hace match, forzamos el Comercio_Original y el Comercio_Limpio
           // (Manteniendo el rastro de USD si existe)
           const isUsd = dto.Comercio_Original.includes('(USD');
-          const usdSuffix = isUsd ? dto.Comercio_Original.substring(dto.Comercio_Original.indexOf('(USD')) : '';
-          
+          const usdSuffix = isUsd
+            ? dto.Comercio_Original.substring(dto.Comercio_Original.indexOf('(USD'))
+            : '';
+
           dto.Comercio_Original = alias.cleanName + (usdSuffix ? ` ${usdSuffix}` : '');
           dto.Comercio_Limpio = alias.cleanName;
-          
+
           logSystemEvent('INFO', 'Entity Resolution', `Normalizado a: ${dto.Comercio_Limpio}`);
           break; // Detenemos la búsqueda al encontrar el primer match
         }
@@ -62,9 +90,8 @@ function parseBankEmail(message) {
     }
 
     return dto;
-
   } catch (error) {
-    logSystemEvent('ERROR', 'Error en el Router Principal', error.message);
+    logSystemEvent('ERROR', 'Error en el Router Principal', getErrorMessage(error));
     return null;
   }
 }
@@ -73,14 +100,14 @@ function parseBankEmail(message) {
  * Procesa un mensaje individual del banco BCI y extrae los datos clave.
  * Convierte compras internacionales a CLP y detecta Anulaciones (Montos Negativos).
  * @param {GoogleAppsScript.Gmail.GmailMessage} message - El mensaje de Gmail.
- * @returns {Object|null} El DTO estandarizado de la transacción.
+ * @returns {Transaction|null} El DTO estandarizado de la transacción.
  */
 function parseBciEmail(message) {
   try {
     const htmlBody = message.getBody();
-    const subject = message.getSubject() || "";
+    const subject = message.getSubject() || '';
     const regex = BCI_LOGIC.REGEX;
-    
+
     const matchFecha = htmlBody.match(regex.FECHA);
     const matchHora = htmlBody.match(regex.HORA);
     const matchMonto = htmlBody.match(regex.MONTO);
@@ -93,24 +120,32 @@ function parseBciEmail(message) {
       return null;
     }
     if (!matchComercio || !matchComercio[1]) {
-      logSystemEvent('WARN', 'Fallo de Parseo BCI', `No se pudo extraer el COMERCIO en: ${subject}`);
+      logSystemEvent(
+        'WARN',
+        'Fallo de Parseo BCI',
+        `No se pudo extraer el COMERCIO en: ${subject}`
+      );
       return null;
     }
 
     // --- 1. ESTANDARIZACIÓN DE FECHA ---
-    const fechaFallback = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    const fechaFallback = Utilities.formatDate(
+      message.getDate(),
+      Session.getScriptTimeZone(),
+      'yyyy-MM-dd'
+    );
     let rawFecha = matchFecha ? matchFecha[1].trim() : fechaFallback;
-    const dateParts = rawFecha.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+    const dateParts = rawFecha.match(/^(\d{2})[/-](\d{2})[/-](\d{4})$/);
     if (dateParts) {
       rawFecha = `${dateParts[3]}-${dateParts[2]}-${dateParts[1]}`; // YYYY-MM-DD
     }
 
     // --- 2. SANITIZACIÓN DE COMERCIO ---
     let comercioRaw = matchComercio[1].trim();
-    comercioRaw = comercioRaw.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' '); 
+    comercioRaw = comercioRaw.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ');
 
     if (/^\d+$/.test(comercioRaw)) {
-      comercioRaw = "Cuenta Propia " + comercioRaw;
+      comercioRaw = 'Cuenta Propia ' + comercioRaw;
     }
 
     // --- 3. PROCESAMIENTO DE MONEDA (CLP vs USD) ---
@@ -122,11 +157,14 @@ function parseBciEmail(message) {
       montoRaw = montoRaw.replace(',', '.');
       const montoUsd = parseFloat(montoRaw);
       const tasaCambio = getUsdToClpRate(rawFecha);
-      
+
       montoNumerico = Math.round(montoUsd * tasaCambio);
-      logSystemEvent('INFO', 'Conversión USD a CLP', `Compra de USD ${montoUsd} procesada a $${montoNumerico} CLP (Dólar a $${tasaCambio})`);
+      logSystemEvent(
+        'INFO',
+        'Conversión USD a CLP',
+        `Compra de USD ${montoUsd} procesada a $${montoNumerico} CLP (Dólar a $${tasaCambio})`
+      );
       comercioRaw = `${comercioRaw} (USD ${montoUsd})`;
-      
     } else {
       montoRaw = montoRaw.replace(/[^\d]/g, '');
       montoNumerico = parseInt(montoRaw, 10);
@@ -135,21 +173,26 @@ function parseBciEmail(message) {
     // --- 3.5 DETECCIÓN DE ANULACIONES (REVERSOS) ---
     // Si el correo menciona explícitamente una anulación, el monto debe ser negativo.
     // Usamos toLowerCase() para no preocuparnos por las mayúsculas/minúsculas.
-    const esAnulacion = htmlBody.toLowerCase().includes('anulación') || htmlBody.toLowerCase().includes('anulacion');
+    const esAnulacion =
+      htmlBody.toLowerCase().includes('anulación') || htmlBody.toLowerCase().includes('anulacion');
     if (esAnulacion) {
       montoNumerico = montoNumerico * -1;
       // Extraemos la fecha y hora limpias solo para el Log
       const fechaLimpia = matchFecha ? matchFecha[1].trim() : 'Fecha Desconocida';
       const horaLimpia = matchHora ? matchHora[1].trim() : 'Hora Desconocida';
-      
-      logSystemEvent('INFO', 'Anulación BCI', `Se detectó reverso de fondos el ${fechaLimpia} a las ${horaLimpia}. Monto ajustado a ${montoNumerico}`);
+
+      logSystemEvent(
+        'INFO',
+        'Anulación BCI',
+        `Se detectó reverso de fondos el ${fechaLimpia} a las ${horaLimpia}. Monto ajustado a ${montoNumerico}`
+      );
     }
 
     // --- 4. CUOTAS Y TIPO ---
-    const cuotasNumerico = (matchCuotas && matchCuotas[1]) ? parseInt(matchCuotas[1], 10) : 1;
+    const cuotasNumerico = matchCuotas && matchCuotas[1] ? parseInt(matchCuotas[1], 10) : 1;
     const subjLower = subject.toLowerCase();
     let tipoGasto = 'Desconocido';
-    
+
     if (subjLower.includes('tarjeta de crédito') || subjLower.includes('credito')) {
       tipoGasto = 'Crédito';
     } else if (subjLower.includes('débito') || subjLower.includes('debito')) {
@@ -157,44 +200,47 @@ function parseBciEmail(message) {
     } else if (subjLower.includes('transferencia')) {
       tipoGasto = 'Transferencia';
     } else if (subjLower.includes('compra') || subjLower.includes('pago')) {
-      tipoGasto = 'Gasto/Pago'; 
+      tipoGasto = 'Gasto/Pago';
     }
 
-    const horaFallback = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "HH:mm");
+    const horaFallback = Utilities.formatDate(
+      message.getDate(),
+      Session.getScriptTimeZone(),
+      'HH:mm'
+    );
 
     // --- 5. CONSTRUCCIÓN DEL DTO ---
     return {
-      Fecha: rawFecha, 
+      Fecha: rawFecha,
       Hora: matchHora ? matchHora[1].trim() : horaFallback,
       Comercio_Original: comercioRaw,
-      Comercio_Limpio: comercioRaw, 
+      Comercio_Limpio: comercioRaw,
       Categoria: 'Por Clasificar Automáticamente',
       Subcategoria: '',
-      Monto: montoNumerico, 
+      Monto: montoNumerico,
       Cuotas: cuotasNumerico,
       Tipo: tipoGasto,
-      Comentario: matchMensaje ? matchMensaje[1].replace(/<[^>]+>/g, '').trim() : "",
-      Origen: "BCI"
+      Comentario: matchMensaje ? matchMensaje[1].replace(/<[^>]+>/g, '').trim() : '',
+      Origen: 'BCI',
     };
-
   } catch (error) {
-    logSystemEvent('ERROR', 'Error interno en parseBciEmail', error.message);
-    return null; 
+    logSystemEvent('ERROR', 'Error interno en parseBciEmail', getErrorMessage(error));
+    return null;
   }
 }
 
 /**
  * Procesa un mensaje de Tenpo y extrae los datos clave.
- * @param {GoogleAppsScript.Gmail.GmailMessage} message 
- * @returns {Object|null} DTO estandarizado.
+ * @param {GoogleAppsScript.Gmail.GmailMessage} message
+ * @returns {Transaction|null} DTO estandarizado.
  */
 function parseTenpoEmail(message) {
   try {
     // Tenpo envía un texto plano muy estructurado, es más seguro parsear eso que el HTML
-    const body = message.getPlainBody(); 
-    const subject = message.getSubject() || "";
+    const body = message.getPlainBody();
+    const subject = message.getSubject() || '';
     const regex = TENPO_LOGIC.REGEX;
-    
+
     const matchFecha = body.match(regex.FECHA);
     const matchHora = body.match(regex.HORA);
     const matchMonto = body.match(regex.MONTO);
@@ -203,7 +249,7 @@ function parseTenpoEmail(message) {
     // --- VALIDACIONES CRÍTICAS ---
     if (!matchMonto || !matchMonto[1]) {
       logSystemEvent('WARN', 'Fallo Tenpo', `Monto no encontrado en: ${subject}`);
-      return null; 
+      return null;
     }
     if (!matchComercio || !matchComercio[1]) {
       logSystemEvent('WARN', 'Fallo Tenpo', `Comercio no encontrado en: ${subject}`);
@@ -211,53 +257,58 @@ function parseTenpoEmail(message) {
     }
 
     // --- NORMALIZACIÓN ---
-    let comercioRaw = matchComercio[1].trim();
-    
+    const comercioRaw = matchComercio[1].trim();
+
     // Limpiamos el monto (ej. "24.590" -> 24590)
-    let montoLimpio = matchMonto[1].replace(/[^\d]/g, '');
+    const montoLimpio = matchMonto[1].replace(/[^\d]/g, '');
     const montoNumerico = parseInt(montoLimpio, 10);
 
     // Fechas y Horas de respaldo
-    let rawFecha = matchFecha ? matchFecha[1].trim() : Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-    const horaFallback = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "HH:mm");
+    let rawFecha = matchFecha
+      ? matchFecha[1].trim()
+      : Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    const horaFallback = Utilities.formatDate(
+      message.getDate(),
+      Session.getScriptTimeZone(),
+      'HH:mm'
+    );
 
     // Estandarización de Fecha de DD-MM-YYYY a YYYY-MM-DD
-    const dateParts = rawFecha.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+    const dateParts = rawFecha.match(/^(\d{2})[/-](\d{2})[/-](\d{4})$/);
     if (dateParts) {
       rawFecha = `${dateParts[3]}-${dateParts[2]}-${dateParts[1]}`;
     }
 
     // --- CONSTRUCCIÓN DEL DTO ---
     return {
-      Fecha: rawFecha, 
+      Fecha: rawFecha,
       Hora: matchHora ? matchHora[1].trim() : horaFallback,
       Comercio_Original: comercioRaw,
-      Comercio_Limpio: comercioRaw, 
+      Comercio_Limpio: comercioRaw,
       Categoria: 'Por Clasificar Automáticamente',
       Subcategoria: '',
       Monto: montoNumerico,
       Cuotas: 1, // Por regla de negocio, Tenpo es prepago
       Tipo: 'Débito',
-      Origen: "TENPO"
+      Origen: 'TENPO',
     };
-
   } catch (error) {
-    logSystemEvent('ERROR', 'Error interno en parseTenpoEmail', error.message);
+    logSystemEvent('ERROR', 'Error interno en parseTenpoEmail', getErrorMessage(error));
     return null;
   }
 }
 
 /**
  * Procesa un mensaje de MACH (Soporta Débito y Crédito).
- * @param {GoogleAppsScript.Gmail.GmailMessage} message 
- * @returns {Object|null} DTO estandarizado.
+ * @param {GoogleAppsScript.Gmail.GmailMessage} message
+ * @returns {Transaction|null} DTO estandarizado.
  */
 function parseMachEmail(message) {
   try {
-    const body = message.getPlainBody(); 
-    const subject = message.getSubject() || "";
+    const body = message.getPlainBody();
+    const subject = message.getSubject() || '';
     const regex = MACH_LOGIC.REGEX;
-    
+
     // Extracción
     const matchFechaHora = body.match(regex.FECHA_HORA);
     const matchMonto = body.match(regex.MONTO);
@@ -266,7 +317,7 @@ function parseMachEmail(message) {
     const matchCuotas = body.match(regex.CUOTAS);
 
     // Determinar el comercio dependiendo de si es formato crédito o débito
-    let comercioRaw = "";
+    let comercioRaw = '';
     if (matchComercioCredito && matchComercioCredito[1]) {
       comercioRaw = matchComercioCredito[1].trim();
     } else if (matchComercioDebito && matchComercioDebito[1]) {
@@ -276,7 +327,7 @@ function parseMachEmail(message) {
     // --- VALIDACIONES CRÍTICAS ---
     if (!matchMonto || !matchMonto[1]) {
       logSystemEvent('WARN', 'Fallo MACH', `Monto no encontrado en: ${subject}`);
-      return null; 
+      return null;
     }
     if (!comercioRaw) {
       logSystemEvent('WARN', 'Fallo MACH', `Comercio no encontrado en: ${subject}`);
@@ -284,12 +335,16 @@ function parseMachEmail(message) {
     }
 
     // --- NORMALIZACIÓN ---
-    let montoLimpio = matchMonto[1].replace(/[^\d]/g, '');
+    const montoLimpio = matchMonto[1].replace(/[^\d]/g, '');
     const montoNumerico = parseInt(montoLimpio, 10);
 
     // Fechas y Horas
-    let rawFecha = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-    let rawHora = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "HH:mm");
+    let rawFecha = Utilities.formatDate(
+      message.getDate(),
+      Session.getScriptTimeZone(),
+      'yyyy-MM-dd'
+    );
+    let rawHora = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), 'HH:mm');
 
     if (matchFechaHora) {
       // Convertir DD/MM/YYYY a YYYY-MM-DD
@@ -301,7 +356,7 @@ function parseMachEmail(message) {
     }
 
     // Cuotas (Si es 0 o no existe, lo forzamos a 1)
-    let cuotasNumerico = (matchCuotas && matchCuotas[1]) ? parseInt(matchCuotas[1], 10) : 1;
+    let cuotasNumerico = matchCuotas && matchCuotas[1] ? parseInt(matchCuotas[1], 10) : 1;
     if (cuotasNumerico === 0) cuotasNumerico = 1;
 
     // Determinar Tipo por Asunto
@@ -309,39 +364,38 @@ function parseMachEmail(message) {
 
     // --- CONSTRUCCIÓN DEL DTO ---
     return {
-      Fecha: rawFecha, 
+      Fecha: rawFecha,
       Hora: rawHora,
       Comercio_Original: comercioRaw,
-      Comercio_Limpio: comercioRaw, 
+      Comercio_Limpio: comercioRaw,
       Categoria: 'Por Clasificar Automáticamente',
       Subcategoria: '',
       Monto: montoNumerico,
       Cuotas: cuotasNumerico,
       Tipo: tipoGasto,
-      Origen: "MACH"
+      Origen: 'MACH',
     };
-
   } catch (error) {
-    logSystemEvent('ERROR', 'Error interno en parseMachEmail', error.message);
+    logSystemEvent('ERROR', 'Error interno en parseMachEmail', getErrorMessage(error));
     return null;
   }
 }
 
 /**
  * Procesa un mensaje del Banco de Chile (Soporta Débito, Crédito y Cheques).
- * @param {GoogleAppsScript.Gmail.GmailMessage} message 
- * @returns {Object|null} DTO estandarizado.
+ * @param {GoogleAppsScript.Gmail.GmailMessage} message
+ * @returns {Transaction|null} DTO estandarizado.
  */
 function parseBancoChileEmail(message) {
   try {
     // Usamos el HTML body porque Banco de Chile a veces codifica los tildes (&uacute;)
-    const body = message.getBody(); 
+    const body = message.getBody();
     // Limpiamos etiquetas HTML sobrantes para que el texto sea como un párrafo continuo
-    const plainText = body.replace(/<[^>]+>/g, ' '); 
-    
-    const subject = message.getSubject() || "";
+    const plainText = body.replace(/<[^>]+>/g, ' ');
+
+    const subject = message.getSubject() || '';
     const regex = BANCOCHILE_LOGIC.REGEX;
-    
+
     // Extracción
     const matchMonto = plainText.match(regex.MONTO);
     const matchFecha = plainText.match(regex.FECHA);
@@ -351,9 +405,9 @@ function parseBancoChileEmail(message) {
     const matchMensaje = body.match(regex.MENSAJE);
 
     // Lógica de Determinación de Comercio
-    let comercioRaw = "";
+    let comercioRaw = '';
     if (matchChequeNum && matchChequeNum[1]) {
-      comercioRaw = "Cobro Cheque N° " + matchChequeNum[1].trim();
+      comercioRaw = 'Cobro Cheque N° ' + matchChequeNum[1].trim();
     } else if (matchComercioCompra && matchComercioCompra[1]) {
       comercioRaw = matchComercioCompra[1].trim();
       // Limpiamos posibles espacios dobles generados por el HTML (Ej: "FLOW   *MIA SPA")
@@ -363,19 +417,27 @@ function parseBancoChileEmail(message) {
     // --- VALIDACIONES CRÍTICAS ---
     if (!matchMonto || !matchMonto[1]) {
       logSystemEvent('WARN', 'Fallo Banco de Chile', `Monto no encontrado en: ${subject}`);
-      return null; 
+      return null;
     }
     if (!comercioRaw) {
-      logSystemEvent('WARN', 'Fallo Banco de Chile', `Comercio/Cheque no encontrado en: ${subject}`);
+      logSystemEvent(
+        'WARN',
+        'Fallo Banco de Chile',
+        `Comercio/Cheque no encontrado en: ${subject}`
+      );
       return null;
     }
 
     // --- NORMALIZACIÓN ---
-    let montoLimpio = matchMonto[1].replace(/[^\d]/g, '');
+    const montoLimpio = matchMonto[1].replace(/[^\d]/g, '');
     const montoNumerico = parseInt(montoLimpio, 10);
 
     // Estandarización de Fechas (DD/MM/YYYY -> YYYY-MM-DD)
-    let rawFecha = Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    let rawFecha = Utilities.formatDate(
+      message.getDate(),
+      Session.getScriptTimeZone(),
+      'yyyy-MM-dd'
+    );
     if (matchFecha && matchFecha[1]) {
       const dateParts = matchFecha[1].trim().split('/');
       if (dateParts.length === 3) {
@@ -383,12 +445,14 @@ function parseBancoChileEmail(message) {
       }
     }
 
-    const rawHora = matchHora ? matchHora[1].trim() : Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), "HH:mm");
+    const rawHora = matchHora
+      ? matchHora[1].trim()
+      : Utilities.formatDate(message.getDate(), Session.getScriptTimeZone(), 'HH:mm');
 
     // Lógica de Determinación de Tipo
     const subjLower = subject.toLowerCase();
     let tipoGasto = 'Débito'; // Por defecto (Cargo en Cuenta)
-    
+
     if (subjLower.includes('crédito') || subjLower.includes('credito')) {
       tipoGasto = 'Crédito';
     } else if (subjLower.includes('cheque')) {
@@ -397,21 +461,20 @@ function parseBancoChileEmail(message) {
 
     // --- CONSTRUCCIÓN DEL DTO ---
     return {
-      Fecha: rawFecha, 
+      Fecha: rawFecha,
       Hora: rawHora,
       Comercio_Original: comercioRaw,
-      Comercio_Limpio: comercioRaw, 
+      Comercio_Limpio: comercioRaw,
       Categoria: 'Por Clasificar Automáticamente',
       Subcategoria: '',
       Monto: montoNumerico,
       Cuotas: 1, // Los correos de notificación del Chile no indican cuotas, se asume 1
       Tipo: tipoGasto,
-      Comentario: matchMensaje ? matchMensaje[1].replace(/<[^>]+>/g, '').trim() : "",
-      Origen: "BANCO_DE_CHILE"
+      Comentario: matchMensaje ? matchMensaje[1].replace(/<[^>]+>/g, '').trim() : '',
+      Origen: 'BANCO_DE_CHILE',
     };
-
   } catch (error) {
-    logSystemEvent('ERROR', 'Error interno en parseBancoChileEmail', error.message);
+    logSystemEvent('ERROR', 'Error interno en parseBancoChileEmail', getErrorMessage(error));
     return null;
   }
 }
@@ -436,21 +499,32 @@ function getUsdToClpRate(fechaYyyyMmDd) {
         return data.serie[0].valor;
       }
     }
-    
+
     // FALLBACK 1: Si es fin de semana/feriado (la serie viene vacía), pedimos el dólar actual
-    const fallbackResponse = UrlFetchApp.fetch('https://mindicador.cl/api/dolar', { muteHttpExceptions: true });
+    const fallbackResponse = UrlFetchApp.fetch('https://mindicador.cl/api/dolar', {
+      muteHttpExceptions: true,
+    });
     if (fallbackResponse.getResponseCode() === 200) {
       const fallbackData = JSON.parse(fallbackResponse.getContentText());
       if (fallbackData.serie && fallbackData.serie.length > 0) {
         return fallbackData.serie[0].valor;
       }
     }
-    
-    // FALLBACK 2: Falla catastrófica de la API, usamos un valor estático razonable
-    return 950; 
-    
+
+    // FALLBACK 2: Falla catastrófica de la API, usamos un valor estático razonable (y se avisa:
+    // el monto en CLP de esa transacción es una estimación, no el dólar real del día).
+    logSystemEvent(
+      'WARN',
+      'Fallo API Divisas',
+      `mindicador.cl no respondió para ${fechaYyyyMmDd}. Usando dólar estático de 950 CLP: el monto convertido es aproximado.`
+    );
+    return 950;
   } catch (error) {
-    logSystemEvent('WARN', 'Fallo API Divisas', `No se pudo obtener el dólar para ${fechaYyyyMmDd}. Usando 950. Error: ${error.message}`);
-    return 950; 
+    logSystemEvent(
+      'WARN',
+      'Fallo API Divisas',
+      `No se pudo obtener el dólar para ${fechaYyyyMmDd}. Usando 950. Error: ${getErrorMessage(error)}`
+    );
+    return 950;
   }
 }
