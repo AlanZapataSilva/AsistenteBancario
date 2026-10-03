@@ -96,6 +96,99 @@ function parseBankEmail(message) {
   }
 }
 
+/** Entidades HTML frecuentes en los correos de los bancos. */
+const HTML_ENTITIES = Object.freeze({
+  '&aacute;': 'á',
+  '&eacute;': 'é',
+  '&iacute;': 'í',
+  '&oacute;': 'ó',
+  '&uacute;': 'ú',
+  '&ntilde;': 'ñ',
+  '&Aacute;': 'Á',
+  '&Eacute;': 'É',
+  '&Iacute;': 'Í',
+  '&Oacute;': 'Ó',
+  '&Uacute;': 'Ú',
+  '&Ntilde;': 'Ñ',
+  '&nbsp;': ' ',
+  '&amp;': '&',
+});
+
+/**
+ * Texto visible de un correo HTML: sin estilos, comentarios ni etiquetas, con las entidades
+ * decodificadas y los espacios colapsados. Los comentarios HTML se descartan porque BCI deja
+ * párrafos comentados que el usuario no ve.
+ * @private
+ * @param {string} html
+ * @returns {string}
+ */
+function _htmlToVisibleText(html) {
+  return String(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[A-Za-z]+;/g, entity =>
+      Object.prototype.hasOwnProperty.call(HTML_ENTITIES, entity)
+        ? /** @type {Record<string, string>} */ (HTML_ENTITIES)[entity]
+        : entity
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Indica si el monto de un correo BCI está en dólares. Se decide por la moneda escrita en la
+ * propia celda del monto ("USD 23,80"); solo si la celda no trae moneda se recurre al titular
+ * "compra en comercio internacional". Una mención a "USD" en otra parte del correo no cuenta.
+ * @private
+ * @param {string} htmlBody
+ * @param {string} visibleText
+ * @returns {boolean}
+ */
+function _isBciUsdAmount(htmlBody, visibleText) {
+  const moneda = htmlBody.match(BCI_LOGIC.REGEX.MONEDA);
+  if (moneda && moneda[1]) return /^US/i.test(moneda[1]);
+  return /realizaste una compra en comercio internacional/i.test(visibleText);
+}
+
+/**
+ * Convierte un monto en dólares escrito al estilo chileno ("23,80", "1.234,56") o anglosajón
+ * ("23.80") a número.
+ * @private
+ * @param {string} raw
+ * @returns {number}
+ */
+function _parseUsdAmount(raw) {
+  const value = raw.trim();
+  if (value.includes(',')) return parseFloat(value.replace(/\./g, '').replace(',', '.'));
+  if (/\.\d{1,2}$/.test(value)) return parseFloat(value);
+  return parseFloat(value.replace(/\./g, ''));
+}
+
+/**
+ * Indica si un correo BCI es una anulación (reverso). Se reconoce por el titular
+ * ("Realizaste una anulación …") o por el asunto. Si la palabra aparece en otro contexto
+ * (p. ej. un pie de página) NO se invierte el signo, pero se deja un aviso por si BCI cambió
+ * la redacción del titular.
+ * @private
+ * @param {string} visibleText
+ * @param {string} subject
+ * @returns {boolean}
+ */
+function _isBciAnulacion(visibleText, subject) {
+  if (/realizaste una anulaci[oó]n/i.test(visibleText) || /anulaci[oó]n/i.test(subject)) {
+    return true;
+  }
+  if (/anulaci[oó]n/i.test(visibleText)) {
+    logSystemEvent(
+      'WARN',
+      'Posible anulación BCI no reconocida',
+      `El correo "${subject}" menciona una anulación fuera del titular; se registró con monto positivo. Revisa si BCI cambió el formato.`
+    );
+  }
+  return false;
+}
+
 /**
  * Procesa un mensaje individual del banco BCI y extrae los datos clave.
  * Convierte compras internacionales a CLP y detecta Anulaciones (Montos Negativos).
@@ -141,21 +234,25 @@ function parseBciEmail(message) {
     }
 
     // --- 2. SANITIZACIÓN DE COMERCIO ---
-    let comercioRaw = matchComercio[1].trim();
-    comercioRaw = comercioRaw.replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ');
+    // El banco rellena con espacios ("PAYU   *UBER TRIP        SANTIAGO     CL"): se colapsan.
+    let comercioRaw = matchComercio[1]
+      .replace(/&amp;/g, '&')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
 
     if (/^\d+$/.test(comercioRaw)) {
       comercioRaw = 'Cuenta Propia ' + comercioRaw;
     }
 
     // --- 3. PROCESAMIENTO DE MONEDA (CLP vs USD) ---
-    const esInternacional = htmlBody.includes('USD') || htmlBody.includes('comercio internacional');
+    const visibleText = _htmlToVisibleText(htmlBody);
+    const esInternacional = _isBciUsdAmount(htmlBody, visibleText);
     let montoRaw = matchMonto[1].trim();
     let montoNumerico = 0;
 
     if (esInternacional) {
-      montoRaw = montoRaw.replace(',', '.');
-      const montoUsd = parseFloat(montoRaw);
+      const montoUsd = _parseUsdAmount(montoRaw);
       const tasaCambio = getUsdToClpRate(rawFecha);
 
       montoNumerico = Math.round(montoUsd * tasaCambio);
@@ -171,10 +268,9 @@ function parseBciEmail(message) {
     }
 
     // --- 3.5 DETECCIÓN DE ANULACIONES (REVERSOS) ---
-    // Si el correo menciona explícitamente una anulación, el monto debe ser negativo.
-    // Usamos toLowerCase() para no preocuparnos por las mayúsculas/minúsculas.
-    const esAnulacion =
-      htmlBody.toLowerCase().includes('anulación') || htmlBody.toLowerCase().includes('anulacion');
+    // Solo BCI envía anulaciones. El titular del correo real dice "Realizaste una anulación
+    // nacional con tu tarjeta de crédito": se busca esa frase, no la palabra en cualquier parte.
+    const esAnulacion = _isBciAnulacion(visibleText, subject);
     if (esAnulacion) {
       montoNumerico = montoNumerico * -1;
       // Extraemos la fecha y hora limpias solo para el Log

@@ -45,36 +45,28 @@ describe('estructura: namespace global compartido', () => {
 });
 
 describe('parser: detección acotada (falsos positivos)', () => {
-  test(
-    'la palabra "USD" en el pie de página no convierte una compra en CLP (F-PAR-1)',
-    { todo: 'F-PAR-1 (Fase 4)' },
-    () => {
-      const env = createEnvironment();
-      const email = bciEmail({
-        monto: '24.590',
-        comercio: 'JUMBO',
-        extraHtml: '<p>Tipo de cambio referencial USD/CLP disponible en bci.cl</p>',
-      });
-      const dto = plain(env.gas.call('parseBciEmail', asMessage(email)));
-      assert.equal(dto.Monto, 24590);
-      assert.doesNotMatch(dto.Comercio_Original, /USD/);
-    }
-  );
+  test('la palabra "USD" en el pie de página no convierte una compra en CLP (F-PAR-1)', () => {
+    const env = createEnvironment();
+    const email = bciEmail({
+      monto: '24.590',
+      comercio: 'JUMBO',
+      extraHtml: '<p>Tipo de cambio referencial USD/CLP disponible en bci.cl</p>',
+    });
+    const dto = plain(env.gas.call('parseBciEmail', asMessage(email)));
+    assert.equal(dto.Monto, 24590);
+    assert.doesNotMatch(dto.Comercio_Original, /USD/);
+  });
 
-  test(
-    'la palabra "anulación" en un pie de página no invierte el signo (F-PAR-2)',
-    { todo: 'F-PAR-2 (Fase 4)' },
-    () => {
-      const env = createEnvironment();
-      const email = bciEmail({
-        monto: '12.000',
-        comercio: 'FARMACIA',
-        extraHtml: '<p>Para solicitar la anulación de un cargo contacta a tu ejecutivo.</p>',
-      });
-      const dto = plain(env.gas.call('parseBciEmail', asMessage(email)));
-      assert.equal(dto.Monto, 12000);
-    }
-  );
+  test('la palabra "anulación" en un pie de página no invierte el signo (F-PAR-2)', () => {
+    const env = createEnvironment();
+    const email = bciEmail({
+      monto: '12.000',
+      comercio: 'FARMACIA',
+      extraHtml: '<p>Para solicitar la anulación de un cargo contacta a tu ejecutivo.</p>',
+    });
+    const dto = plain(env.gas.call('parseBciEmail', asMessage(email)));
+    assert.equal(dto.Monto, 12000);
+  });
 
   test('el remitente se valida estrictamente por dominio (F-PAR-3)', () => {
     const env = createEnvironment();

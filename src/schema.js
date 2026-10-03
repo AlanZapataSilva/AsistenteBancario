@@ -64,11 +64,14 @@ function transactionToRow(tx) {
 
 /**
  * Normaliza un nombre de comercio para usarlo como clave de comparación (diccionario, agrupación).
+ * Colapsa los espacios internos: las reglas antiguas del diccionario guardadas con espacios de
+ * relleno ("ANTHROPIC* CLAUDE SUB    +1415…") siguen coincidiendo con los comercios ya limpios.
  * @param {any} text
  * @returns {string}
  */
 function normalizeMerchantKey(text) {
   return String(text === null || text === undefined ? '' : text)
+    .replace(/\s+/g, ' ')
     .trim()
     .toLowerCase();
 }

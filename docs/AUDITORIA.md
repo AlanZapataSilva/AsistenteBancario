@@ -6,7 +6,8 @@ prueba automática que lo cubre. Las pruebas viven en `tests/` y se ejecutan con
 
 - **Corregido**: arreglado y cubierto por una prueba que antes fallaba.
 - **Diferido**: decisión consciente de no cambiarlo en esta iteración (motivo indicado).
-- **Pendiente de muestras**: requiere correos reales anonimizados para corregirlo con seguridad.
+- **Pendiente de muestras**: requiere correos reales anonimizados para corregirlo con seguridad
+  (hoy no queda ninguno en este estado).
 
 ## 1. El incidente de Gemini ("Colapso total de Gemini API")
 
@@ -70,17 +71,18 @@ lock de _script_ que protege Sheets.
 
 ## 3. Parser y configuración
 
-| ID      | Hallazgo                                                                                                                                | Estado                                                                                                                                                          |
-| ------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F-PAR-1 | USD y "anulación" se detectan por subcadena en **todo** el HTML: un pie de página puede convertir una compra en CLP o invertir el signo | **Pendiente de muestras**. Cambiarlo sin ver correos reales podría romper la detección internacional real. Hay pruebas marcadas `todo` que definen el criterio. |
-| F-PAR-2 | _(ídem, "anulación")_                                                                                                                   | **Pendiente de muestras**                                                                                                                                       |
-| F-PAR-3 | Remitente validado con `includes('tenpo')` etc.                                                                                         | **Corregido** (se valida el dominio: `bci.cl`, `tenpo.cl`, `machbank.cl`, `bancochile.cl` y subdominios)                                                        |
-| F-PAR-4 | El dólar de respaldo (950 CLP) se usaba sin dejar rastro                                                                                | **Corregido** (WARN explícito)                                                                                                                                  |
-| F-CFG-1 | `/C.\s*VERDE/` nunca coincidía con "CRUZ VERDE"                                                                                         | **Corregido**                                                                                                                                                   |
-| F-CFG-2 | `/UBER/` absorbía Uber Eats (comida) como transporte                                                                                    | **Corregido**                                                                                                                                                   |
-| F-CFG-4 | Alias demasiado amplios (`/LIDER/`, `/MELI/`, `/EII/`…) capturaban palabras ajenas ("LIDERAZGO", "MELIA")                               | **Corregido** (exigen que no los rodeen letras)                                                                                                                 |
-| F-CFG-3 | El alias sobrescribe `Comercio_Original` y se pierde el texto bruto del banco                                                           | **Diferido**: `Comercio_Original` es la clave del diccionario; conservar el bruto exige una columna nueva (cambio de esquema). Ver ROADMAP.                     |
-| F-CFG-5 | `SUBJECTS` de `config` sin uso y distintos de la query de Gmail codificada                                                              | **Diferido**: ampliar la query cambiaría qué correos se ingieren. Decisión del usuario (ver ROADMAP).                                                           |
+| ID      | Hallazgo                                                                                                           | Estado                                                                                                                                                                                                                                             |
+| ------- | ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-PAR-1 | El USD se detectaba por la subcadena "USD" en **todo** el HTML: un pie de página podía convertir una compra en CLP | **Corregido** con un correo real: la moneda se lee de la celda del monto ("USD 23,80"); solo si la celda no trae moneda se usa el titular "compra en comercio internacional". También se interpreta bien "USD 1.234,56".                           |
+| F-PAR-2 | La anulación se detectaba por la palabra "anulación" en **todo** el HTML: un pie de página podía invertir el signo | **Corregido** con un correo real: se reconoce el titular "Realizaste una anulación …" (o el asunto). Si la palabra aparece en otro lugar se registra positivo y se deja un WARN «Posible anulación BCI no reconocida». Solo BCI envía anulaciones. |
+| F-PAR-5 | Los comercios de BCI traen espacios de relleno ("PAYU *UBER TRIP SANTIAGO CL")                                     | **Corregido**: se colapsan, y la clave del diccionario también, así que las reglas antiguas siguen coincidiendo.                                                                                                                                   |
+| F-PAR-3 | Remitente validado con `includes('tenpo')` etc.                                                                    | **Corregido** (se valida el dominio: `bci.cl`, `tenpo.cl`, `machbank.cl`, `bancochile.cl` y subdominios)                                                                                                                                           |
+| F-PAR-4 | El dólar de respaldo (950 CLP) se usaba sin dejar rastro                                                           | **Corregido** (WARN explícito)                                                                                                                                                                                                                     |
+| F-CFG-1 | `/C.\s*VERDE/` nunca coincidía con "CRUZ VERDE"                                                                    | **Corregido**                                                                                                                                                                                                                                      |
+| F-CFG-2 | `/UBER/` absorbía Uber Eats (comida) como transporte                                                               | **Corregido**                                                                                                                                                                                                                                      |
+| F-CFG-4 | Alias demasiado amplios (`/LIDER/`, `/MELI/`, `/EII/`…) capturaban palabras ajenas ("LIDERAZGO", "MELIA")          | **Corregido** (exigen que no los rodeen letras)                                                                                                                                                                                                    |
+| F-CFG-3 | El alias sobrescribe `Comercio_Original` y se pierde el texto bruto del banco                                      | **Diferido**: `Comercio_Original` es la clave del diccionario; conservar el bruto exige una columna nueva (cambio de esquema). Ver ROADMAP.                                                                                                        |
+| F-CFG-5 | `SUBJECTS` de `config` sin uso y distintos de la query de Gmail codificada                                         | **Diferido**: ampliar la query cambiaría qué correos se ingieren. Decisión del usuario (ver ROADMAP).                                                                                                                                              |
 
 ## 4. Limpieza y mantenibilidad
 
@@ -107,8 +109,11 @@ lock de _script_ que protege Sheets.
 - La línea base se congeló **antes** de tocar el código: 148 pruebas sobre el código original (93 de
   comportamiento a conservar y 55 defectos confirmados que fallaban por la razón esperada). Después de
   cada fase se repite la misma suite. Los únicos cambios de comportamiento son los listados arriba.
-- Estado final: **180 pruebas, 178 en verde y 2 `todo`** (F-PAR-1 y F-PAR-2, pendientes de correos
-  reales). Cobertura de líneas ≈ 95 %. `npm run check` termina en 0 con ESLint sin advertencias y
-  `tsc --strict`.
-- **Limitación**: los correos de prueba son sintéticos (derivados de las expresiones regulares). Con un
-  correo real anonimizado por banco se pueden fijar pruebas de formato reales.
+- Estado actual: **190 pruebas, todas en verde, sin `todo`**. Cobertura de líneas ≈ 95 %.
+  `npm run check` termina en 0 con ESLint sin advertencias y `tsc --strict`.
+- **Correos reales**: `tests/fixtures/` tiene dos correos reales de BCI anonimizados (nombre y tarjeta
+  reemplazados; se recortaron estilos e imágenes sin tocar titular, tabla ni pie legal): una anulación
+  con tarjeta de crédito (en quoted-printable, tal como llega) y una compra en dólares. El código
+  original ya los procesaba bien; se usaron para acotar la detección sin perder esos casos.
+- **Limitación**: Tenpo, MACH, Banco de Chile y las transferencias de BCI siguen probándose con correos
+  sintéticos derivados de las expresiones regulares.

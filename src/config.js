@@ -89,7 +89,9 @@ const BCI_LOGIC = Object.freeze({
     FECHA: />\s*(?:Fecha|Fecha de abono|Fecha y hora)[\s\S]*?<td[^>]*>\s*([\d/-]+)/i,
     HORA: />\s*(?:Hora|Fecha y hora)[\s\S]*?<td[^>]*>\s*(?:[\d/-]+\s+)?([\d:]+)/i,
     MONTO:
-      />\s*(?:Monto|Monto transferido|Monto Total)[\s\S]*?<td[^>]*>\s*(?:\$|USD)?\s*([\d.,]+)/i,
+      />\s*(?:Monto|Monto transferido|Monto Total)[\s\S]*?<td[^>]*>\s*(?:USD|US\$|\$)?\s*([\d.,]+)/i,
+    // Moneda escrita en la celda del monto: "$2.193" (CLP) o "USD 23,80" (dólares).
+    MONEDA: />\s*(?:Monto|Monto transferido|Monto Total)[\s\S]*?<td[^>]*>\s*(USD|US\$|\$)?/i,
     COMERCIO:
       />\s*(?:Comercio|Nombre|Cuenta de destino|Nombre del destinatario)[\s\S]*?<td[^>]*>\s*(.+?)\s*<\/td>/i,
     CUOTAS: />\s*Cuotas[\s\S]*?<td[^>]*>\s*(\d+)/i,

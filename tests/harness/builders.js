@@ -24,7 +24,8 @@ function htmlTable(rows) {
  * @param {string} [p.subject]
  * @param {string} [p.fecha] - DD/MM/YYYY
  * @param {string} [p.hora] - HH:MM
- * @param {string} p.monto - Como aparece en el correo, ej. "24.590".
+ * @param {string} p.monto - Como aparece en el correo, ej. "24.590" o "23,80".
+ * @param {'CLP'|'USD'} [p.moneda] - USD imita el formato real: "USD 23,80" en la celda del monto.
  * @param {string} p.comercio
  * @param {string} [p.cuotas]
  * @param {string} [p.mensaje]
@@ -36,7 +37,7 @@ function bciEmail(p) {
   const rows = {
     Fecha: p.fecha ?? '27/09/2026',
     Hora: p.hora ?? '23:41',
-    Monto: `$${p.monto}`,
+    Monto: p.moneda === 'USD' ? `USD ${p.monto}` : `$${p.monto}`,
     Comercio: p.comercio,
   };
   if (p.cuotas) rows.Cuotas = p.cuotas;
@@ -45,6 +46,47 @@ function bciEmail(p) {
     from: 'Bci <notificaciones@bci.cl>',
     subject: p.subject ?? 'Notificación de uso de tu tarjeta de crédito',
     body: htmlTable(rows) + (p.extraHtml ?? ''),
+    date: new Date(Date.UTC(2026, 8, 28, 2, 41)),
+  };
+}
+
+/**
+ * Decodifica quoted-printable (como lo hace Gmail antes de entregar `getBody()`).
+ * @param {string} text
+ * @returns {string}
+ */
+function decodeQuotedPrintable(text) {
+  const joined = text.replace(/=\r?\n/g, '');
+  /** @type {number[]} */
+  const bytes = [];
+  for (let i = 0; i < joined.length; i++) {
+    const hex = joined.slice(i + 1, i + 3);
+    if (joined[i] === '=' && /^[0-9A-F]{2}$/i.test(hex)) {
+      bytes.push(parseInt(hex, 16));
+      i += 2;
+    } else {
+      bytes.push(...Buffer.from(joined[i], 'utf8'));
+    }
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/**
+ * Correo REAL de BCI (anonimizado) guardado en `tests/fixtures/`. Los archivos `*.qp.html` están en
+ * quoted-printable, tal como llegan; se decodifican para imitar `GmailMessage.getBody()`.
+ * @param {string} fileName
+ * @param {{subject?: string, transform?: (html: string) => string}} [opts]
+ * @returns {{from: string, subject: string, body: string, date: Date}}
+ */
+function realBciEmail(fileName, opts = {}) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const raw = fs.readFileSync(path.join(__dirname, '..', 'fixtures', fileName), 'utf8');
+  const html = fileName.endsWith('.qp.html') ? decodeQuotedPrintable(raw) : raw;
+  return {
+    from: 'Bci <notificaciones@bci.cl>',
+    subject: opts.subject ?? 'Notificación de uso de tu tarjeta de crédito',
+    body: opts.transform ? opts.transform(html) : html,
     date: new Date(Date.UTC(2026, 8, 28, 2, 41)),
   };
 }
@@ -140,4 +182,13 @@ function asMessage(init) {
   };
 }
 
-module.exports = { htmlTable, bciEmail, tenpoEmail, machEmail, bancoChileEmail, asMessage };
+module.exports = {
+  decodeQuotedPrintable,
+  realBciEmail,
+  htmlTable,
+  bciEmail,
+  tenpoEmail,
+  machEmail,
+  bancoChileEmail,
+  asMessage,
+};

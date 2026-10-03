@@ -91,11 +91,9 @@ describe('parseBciEmail', () => {
 
   test('compra internacional convierte USD a CLP con el dólar del día', () => {
     const env = createEnvironment();
-    const html = bciEmail({
-      monto: '10,50',
-      comercio: 'AMZN MKTP US',
-      extraHtml: '<p>Compra en USD</p>',
-    });
+    // Cambio intencional: el USD se detecta en la celda del monto ("USD 10,50"), como en el correo
+    // real de BCI, y no por la palabra "USD" en cualquier parte del HTML.
+    const html = bciEmail({ monto: '10,50', moneda: 'USD', comercio: 'AMZN MKTP US' });
     const dto = plain(env.gas.call('parseBciEmail', asMessage(html)));
     // mindicador falso devuelve 900 CLP/USD → 10,5 * 900 = 9450
     assert.equal(dto.Monto, 9450);
@@ -107,7 +105,8 @@ describe('parseBciEmail', () => {
     const email = bciEmail({
       monto: '12.000',
       comercio: 'FARMACIA X',
-      extraHtml: '<p>Anulación de compra</p>',
+      // Cambio intencional: se reconoce el titular real de BCI, no la palabra suelta.
+      extraHtml: '<p>Realizaste una<br><b>anulación nacional </b><br>con tu tarjeta</p>',
     });
     const dto = plain(env.gas.call('parseBciEmail', asMessage(email)));
     assert.equal(dto.Monto, -12000);
@@ -271,7 +270,7 @@ describe('parseBankEmail (router + resolución de entidades)', () => {
 
   test('alias con sufijo USD conserva el rastro de USD', () => {
     const env = createEnvironment();
-    const email = bciEmail({ monto: '20,00', comercio: 'UBER *TRIP', extraHtml: '<p>USD</p>' });
+    const email = bciEmail({ monto: '20,00', moneda: 'USD', comercio: 'UBER *TRIP' });
     const dto = plain(env.gas.call('parseBankEmail', asMessage(email)));
     assert.equal(dto.Comercio_Original, 'Uber (USD 20)');
     assert.equal(dto.Comercio_Limpio, 'Uber');

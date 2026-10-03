@@ -20,11 +20,12 @@ _Last update: 2026-09-30._
   - `3519e13` test: GAS harness and test suite
   - `0fe652d` fix(gemini): resilient cascade, id-based classifier, sweeper without nested locks
   - `3135fb6` refactor: move to `src/*.js`, Telegram/UI/parser hardening, documentation
-- **Quality gate**: `npm run check` passes (syntax, Prettier, ESLint with `--max-warnings 0`, `tsc --strict`, 180 tests: 178 passing + 2 `todo`).
+- **Quality gate**: `npm run check` passes (syntax, Prettier, ESLint with `--max-warnings 0`, `tsc --strict`, 190 tests, all passing, no `todo`).
 - **Deploy blocked on the user** (cannot be done by an agent): `npx clasp login`, enabling the Apps Script API, the `scriptId` (for `.clasp.json`, which is git-ignored) and the **existing** Web App `deploymentId`. After the first deploy the user must re-authorize once (explicit `oauthScopes`) and run the «🩺 Diagnóstico del sistema» menu.
 - **Open items** (details in `docs/AUDITORIA.md` and `docs/ROADMAP.md`, "Ola 0"):
-  - **F-PAR-1** (USD detected by substring anywhere in the email) and **F-PAR-2** (BCI "anulación" detected the same way): kept as `todo` tests on purpose. **Waiting for real, anonymized email samples from the user.** Do not change that detection logic without them.
+  - **F-PAR-1/F-PAR-2 fixed** with two real BCI emails (`tests/fixtures/`, anonymized): USD is read from the amount cell ("USD 23,80"); a cancellation is recognized by the headline "Realizaste una anulación …" (or the subject). Pending confirmation from the user: the exact **subject lines** of BCI cancellation and USD emails (the Gmail query only fetches BCI emails whose subject contains "Aviso de Transferencia" or "Notificación de uso de tu tarjeta de crédito"; the tests assume the latter).
   - Only **BCI** sends cancellation ("anulación") emails. Do not add cancellation handling for other banks unless the user asks.
+  - Other parsers (Tenpo, MACH, Banco de Chile, BCI transfers/debit) are still tested with synthetic emails; ask for real anonymized samples before changing them. Never commit real names, card digits or account numbers in fixtures.
   - Not verified live yet: the exact Gemini 3.x thinking parameter name (the client drops it automatically on HTTP 400), whether `LockService` is re-entrant (the code does not depend on it), and the new `oauthScopes`.
   - Deferred by decision: keeping the raw bank merchant text (F-CFG-3, needs a schema change) and unifying the Gmail query with `*_LOGIC.SUBJECTS` (F-CFG-5, would ingest new email types).
 - **Next initiative**: a monthly spending dashboard reachable from a smartphone (data in Sheets and Notion). The research prompt was delivered in chat; nothing is implemented. See also `docs/ROADMAP.md`.
