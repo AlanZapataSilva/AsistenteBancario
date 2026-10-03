@@ -31,6 +31,13 @@ anida locks**, por lo que funciona en ambos casos (las pruebas ejecutan el sweep
 reentrante y no reentrante). Además el nuevo `processEmails` usa un lock de _usuario_ distinto del
 lock de _script_ que protege Sheets.
 
+**Verificación en vivo (2026-10-03, «🩺 Diagnóstico»).** El `LockService` **sí es reentrante**, así que
+la hipótesis RC6(b) no se cumplía en producción. Al clonar el proyecto en vivo se confirmó la causa
+real de RC6(a): Apps Script cargaba `maintenance.js` **después** de `maitenance.js`, por lo que la
+versión de `cleanAndSortData` **sin** sweeper era la activa y las transacciones pendientes nunca se
+reprocesaban de noche. El código en vivo era exactamente el commit `f1b772a` (RC1 confirmado).
+El descubrimiento encontró 10 modelos de texto y una clasificación real respondió con `gemini-3.7-flash`.
+
 ### Cómo funciona ahora
 
 1. `listGeminiModelNames` recorre **todas** las páginas de ListModels; los modelos se ordenan por
